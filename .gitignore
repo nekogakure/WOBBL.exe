@@ -17,10 +17,8 @@ Makefile
 
 # Ignore build directories
 /build/
-/bin/
 /debug/
 /release/
-/obj/
 
 # Ignore editor and OS files
 *~
